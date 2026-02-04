@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ===== Config =====
 VM_DIR="${VM_DIR:-$PWD/ubuntu24-qemu}"
-VM_NAME="${VM_NAME:-noble-node22}"
+VM_NAME="${VM_NAME:-noble-claw}"
 RAM_MB="${RAM_MB:-8192}"
 CPUS="${CPUS:-4}"
 DISK_GB="${DISK_GB:-30}"
@@ -15,7 +15,6 @@ BRIDGE="${BRIDGE:-br0}"
 SSH_FWD_PORT="${SSH_FWD_PORT:-2222}"
 
 # Ubuntu 24.04 cloud image URLs (no ISO install)
-# Try the released image first, then fall back to the "current" stream.
 BASE_IMG_URLS=(
   "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img"
   "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
@@ -25,8 +24,8 @@ BASE_IMG="$VM_DIR/ubuntu-24.04-server-cloudimg-amd64.img"
 OVERLAY_IMG="$VM_DIR/${VM_NAME}.qcow2"
 SEED_IMG="$VM_DIR/seed.iso"
 
-# cloud-init default user in Ubuntu cloud images is typically "ubuntu"
-VM_USER="${VM_USER:-ubuntu}"
+# Default user in the VM (per README)
+VM_USER="${VM_USER:-claw}"
 
 # IMPORTANT: replace this key with YOUR public key for SSH access,
 # or set SSH_PUBKEY env var.
@@ -87,14 +86,14 @@ META_DATA="$VM_DIR/meta-data"
 
 cat >"$USER_DATA" <<'EOF'
 #cloud-config
-hostname: noble-node22
+hostname: __VM_NAME__
 manage_etc_hosts: true
 
 # Avoid tzdata / debconf prompts in non-interactive cloud-init
 timezone: Etc/UTC
 
 users:
-  - name: ubuntu
+  - name: __VM_USER__
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: users, admin, sudo
     shell: /bin/bash
@@ -125,46 +124,60 @@ packages:
   - gpg
   - pkg-config
   - libvips-dev
-  # Backstop in case anything tries to invoke debconf frontend
   - debconf
   - debconf-utils
 
+  # Headless X11 via VNC + lightweight desktop
+  - xfce4
+  - xfce4-goodies
+  - dbus-x11
+  - tigervnc-standalone-server
+  - tigervnc-common
+
+  # Useful for graphical tools
+  - chromium-browser
+
 runcmd:
-  # Always run apt non-interactively in cloud-init
   - [ bash, -lc, "export DEBIAN_FRONTEND=noninteractive" ]
 
-  # Add NodeSource repo for Node.js 22 (avoid running their setup script)
+  # Node.js 22 from NodeSource (avoid running their setup script)
   - [ bash, -lc, "install -d -m 0755 /usr/share/keyrings" ]
   - [ bash, -lc, "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg" ]
   - [ bash, -lc, "echo 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main' > /etc/apt/sources.list.d/nodesource.list" ]
   - [ bash, -lc, "apt-get update" ]
   - [ bash, -lc, "DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs" ]
-
-  # Backstop: ensure npm exists (Ubuntu can separate it; NodeSource usually includes it)
   - [ bash, -lc, "command -v npm >/dev/null 2>&1 || (DEBIAN_FRONTEND=noninteractive apt-get install -y npm)" ]
-
   - [ bash, -lc, "node -v && npm -v" ]
 
-  # Install openclaw (global) via npm
-  - [ bash, -lc, "npm install -g openclaw@latest" ]
-  - [ bash, -lc, "openclaw --version || true" ]
+  # ---- Per-user npm location (avoid system-level installs) ----
+  - [ bash, -lc, "su - __VM_USER__ -c 'mkdir -p ~/.npm-global ~/.cache/npm ~/.config'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q NPM_CONFIG_PREFIX ~/.profile 2>/dev/null || { echo "export NPM_CONFIG_PREFIX=\"$HOME/.npm-global\"" >> ~/.profile; echo "export PATH=\"$HOME/.npm-global/bin:$PATH\"" >> ~/.profile; }'" ]
 
-final_message: "Cloud-init complete. You can SSH to the VM user 'ubuntu'."
+  # ---- Check out OpenClaw into the user's HOME and build it locally ----
+  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; mkdir -p ~/.openclaw/workspace; cd ~/.openclaw/workspace; if [ ! -d openclaw/.git ]; then git clone --depth 1 --branch stable https://github.com/openclaw/openclaw.git; fi; cd openclaw; npm install; npm run build'" ]
+
+  # Install the CLI into the user's prefix (still local to HOME)
+  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; cd ~/.openclaw/workspace/openclaw; npm install -g .; openclaw --version || true'" ]
+
+  # ---- VNC (localhost-only) + XFCE ----
+  # NOTE: The VNC password must be set interactively by the user (or via a separate secret mechanism).
+  # We create the xstartup and a systemd user unit; then enable lingering so it can start at boot.
+  - [ bash, -lc, "su - __VM_USER__ -c 'mkdir -p ~/.vnc ~/.config/systemd/user'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'cat > ~/.vnc/xstartup <<\"XS\"\n#!/bin/sh\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nexec startxfce4\nXS\nchmod +x ~/.vnc/xstartup'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'cat > ~/.config/systemd/user/vncserver@.service <<\"UNIT\"\n[Unit]\nDescription=TigerVNC server on display %i\nAfter=network.target\n\n[Service]\nType=forking\nExecStart=/usr/bin/vncserver :%i -localhost -geometry 1920x1080 -depth 24\nExecStop=/usr/bin/vncserver -kill :%i\n\n[Install]\nWantedBy=default.target\nUNIT'" ]
+  - [ bash, -lc, "loginctl enable-linger __VM_USER__" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'systemctl --user daemon-reload'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'systemctl --user enable vncserver@1.service'" ]
+
+final_message: "Cloud-init complete. SSH to the VM user '__VM_USER__'. Then run: vncpasswd && systemctl --user start vncserver@1"
 EOF
 
-# Substitute runtime values safely
-# (We used a single-quoted heredoc above so cloud-init YAML doesn't get mangled by bash)
-sed -i \
-  -e "s/^hostname: .*/hostname: ${VM_NAME}/" \
-  -e "s/^instance-id: .*/instance-id: ${VM_NAME}-$(date +%s)/" \
-  "$USER_DATA" 2>/dev/null || true
-
-# Replace placeholders for user + key
-# Note: escape slashes & ampersands for sed
+# Replace placeholders safely
 esc_key="$(printf '%s' "$SSH_PUBKEY" | sed 's/[\/&]/\\&/g')"
 sed -i \
-  -e "s/^  - name: ubuntu$/  - name: ${VM_USER}/" \
-  -e "s/__SSH_PUBKEY__/${esc_key}/" \
+  -e "s/__VM_NAME__/${VM_NAME}/g" \
+  -e "s/__VM_USER__/${VM_USER}/g" \
+  -e "s/__SSH_PUBKEY__/${esc_key}/g" \
   "$USER_DATA"
 
 cat >"$META_DATA" <<EOF
@@ -201,7 +214,14 @@ echo "Seed: $SEED_IMG"
 echo "Networking mode: $MODE"
 if [[ "$MODE" == "nat" ]]; then
   echo "SSH with: ssh -p ${SSH_FWD_PORT} ${VM_USER}@127.0.0.1"
+  echo "After setting VNC password inside VM, tunnel VNC with:"
+  echo "  ssh -L 5901:127.0.0.1:5901 -p ${SSH_FWD_PORT} ${VM_USER}@127.0.0.1"
+  echo "Then connect your VNC client to: 127.0.0.1:5901"
 fi
+
+echo "NOTE: This VM runs headless. VNC is localhost-only inside the VM."
+
+echo "\nIf openclaw CLI is not in PATH on first login, run: source ~/.profile"
 
 exec qemu-system-x86_64 \
   -enable-kvm \

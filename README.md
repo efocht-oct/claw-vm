@@ -1,13 +1,54 @@
-Ã# OpenClaw VM
+# OpenClaw VM
 
-This repository contains tools for spinning up openclaw in a VM
-which is being started in qemu.
+This repository contains tools for spinning up OpenClaw in a VM started via QEMU.
 
-This is work in progress. Following functionality is planned:
-* create a VM based on ubuntu-24.04 and the default user "claw"
-* the VM needs nodejs installed in v22 or higher
-* nodejs should install dependencies in the user directory, not at system level in order to prevent permission problems
-* in the user's HOME we check out the openclaw github repository, the latest stable branch, install dependencies and build openclaw (locally)
-* scripts for backing up the state of the agent and restoring them shall be available
-* the OS in the VM shall run headless, with a vnc based X11 server which shall be accessible from localhost, only
+Current design goals:
+- VM based on Ubuntu 24.04 with default user **claw**
+- Node.js **v22+**
+- Node/npm installs **in the user HOME** (no system-level npm global installs)
+- In the user's HOME we check out the OpenClaw GitHub repository (**stable** branch), install deps and build OpenClaw locally
+- Scripts for **backup/restore** of agent state are provided (optionally including secrets)
+- VM runs headless, with **XFCE over TigerVNC**, bound to **localhost only** (use SSH tunneling)
+
+## Usage
+
+### Start VM
+
+```bash
+cd scripts
+./run_claw_vm.sh
+```
+
+If the host uses NAT mode (no bridge), SSH will be available via the forwarded port (default 2222).
+
+### Enable VNC inside the VM
+
+After first boot, SSH in and set a VNC password:
+
+```bash
+vncpasswd
+systemctl --user start vncserver@1
+```
+
+On the host, tunnel VNC:
+
+```bash
+ssh -L 5901:127.0.0.1:5901 -p 2222 claw@127.0.0.1
+```
+
+Then connect your VNC client to `127.0.0.1:5901`.
+
+## Backup / Restore
+
+Encrypted backup including secrets:
+
+```bash
+./scripts/backup-openclaw.sh
+```
+
+Restore (overwrites files):
+
+```bash
+./scripts/restore-openclaw.sh /path/to/openclaw-backup-*.tar.gpg
+```
 
