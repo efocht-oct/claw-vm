@@ -88,13 +88,15 @@ write_files:
       APT::Get::Quiet "true";
       Acquire::Retries "3";
 
-  # Make Homebrew available on PATH for the default user
+  # Make Homebrew available on PATH (support both per-user and shared /home/linuxbrew installs)
   - path: /etc/profile.d/brew.sh
     permissions: '0644'
     content: |
       # Homebrew (Linuxbrew)
-      if [ -x /home/__VM_USER__/.linuxbrew/bin/brew ]; then
-        export PATH="/home/__VM_USER__/.linuxbrew/bin:/home/__VM_USER__/.linuxbrew/sbin:$PATH"
+      if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+      elif [ -x /home/__VM_USER__/.linuxbrew/bin/brew ]; then
+        eval "$(/home/__VM_USER__/.linuxbrew/bin/brew shellenv)"
       fi
 
 packages:
@@ -131,7 +133,11 @@ runcmd:
   - [ bash, -lc, "command -v npm >/dev/null 2>&1 || (DEBIAN_FRONTEND=noninteractive apt-get install -y npm)" ]
   - [ bash, -lc, "node -v && npm -v" ]
 
-  - [ bash, -lc, "su - __VM_USER__ -c 'mkdir -p ~/.npm-global ~/.cache/npm ~/.config'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'mkdir -p ~/.npm-global ~/.cache/npm ~/.config ~/.local/bin'" ]
+
+  # Ensure sane PATH for user-local tools
+  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q \"\\$HOME/.local/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.local/bin:$PATH\\\"\" >> ~/.profile'" ]
+
   - [ bash, -lc, "su - __VM_USER__ -c 'grep -q NPM_CONFIG_PREFIX ~/.profile 2>/dev/null || { echo \"export NPM_CONFIG_PREFIX=\\\"$HOME/.npm-global\\\"\" >> ~/.profile; echo \"export PATH=\\\"$HOME/.npm-global/bin:$PATH\\\"\" >> ~/.profile; }'" ]
 
   # ---- Homebrew (Linuxbrew) in user HOME ----
