@@ -88,6 +88,15 @@ write_files:
       APT::Get::Quiet "true";
       Acquire::Retries "3";
 
+  # Make Homebrew available on PATH for the default user
+  - path: /etc/profile.d/brew.sh
+    permissions: '0644'
+    content: |
+      # Homebrew (Linuxbrew)
+      if [ -x /home/__VM_USER__/.linuxbrew/bin/brew ]; then
+        export PATH="/home/__VM_USER__/.linuxbrew/bin:/home/__VM_USER__/.linuxbrew/sbin:$PATH"
+      fi
+
 packages:
   - git
   - build-essential
@@ -132,8 +141,6 @@ runcmd:
   - [ bash, -lc, "chmod +x /tmp/brew-install.sh" ]
   - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; if [ ! -x ~/.linuxbrew/bin/brew ]; then NONINTERACTIVE=1 /bin/bash /tmp/brew-install.sh; fi'" ]
   - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; $HOME/.linuxbrew/bin/brew --version || true'" ]
-  # Put brew on PATH for future logins (simple PATH export; avoids nested quoting)
-  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q linuxbrew ~/.profile 2>/dev/null || { echo >> ~/.profile; echo '\''# Homebrew'\'' >> ~/.profile; echo '\''export PATH=\"$HOME/.linuxbrew/bin:$HOME/.linuxbrew/sbin:$PATH\"'\'' >> ~/.profile; }'" ]
 
   - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; mkdir -p ~/.openclaw/workspace; cd ~/.openclaw/workspace; if [ ! -d openclaw/.git ]; then git clone --depth 1 --branch stable https://github.com/openclaw/openclaw.git; fi; cd openclaw; npm install; npm run build'" ]
   - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; cd ~/.openclaw/workspace/openclaw; npm install -g .; openclaw --version || true'" ]
