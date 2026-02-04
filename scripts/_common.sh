@@ -105,6 +105,12 @@ packages:
   - tigervnc-common
   - chromium-browser
 
+  # Homebrew prerequisites
+  - file
+  - procps
+  - locales
+  - tzdata
+
 runcmd:
   - [ bash, -lc, "export DEBIAN_FRONTEND=noninteractive" ]
 
@@ -118,6 +124,12 @@ runcmd:
 
   - [ bash, -lc, "su - __VM_USER__ -c 'mkdir -p ~/.npm-global ~/.cache/npm ~/.config'" ]
   - [ bash, -lc, "su - __VM_USER__ -c 'grep -q NPM_CONFIG_PREFIX ~/.profile 2>/dev/null || { echo \"export NPM_CONFIG_PREFIX=\\\"$HOME/.npm-global\\\"\" >> ~/.profile; echo \"export PATH=\\\"$HOME/.npm-global/bin:$PATH\\\"\" >> ~/.profile; }'" ]
+
+  # ---- Homebrew (Linuxbrew) in user HOME ----
+  # Installs to /home/__VM_USER__/.linuxbrew and makes `brew` available.
+  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; if [ ! -x ~/.linuxbrew/bin/brew ]; then NONINTERACTIVE=1 /bin/bash -lc \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"; fi'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; BREW_BIN=\"$HOME/.linuxbrew/bin/brew\"; if [ -x \"$BREW_BIN\" ]; then \"$BREW_BIN\" --version; fi'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q "linuxbrew" ~/.profile 2>/dev/null || { echo "" >> ~/.profile; echo "# Homebrew" >> ~/.profile; echo "eval \"$($HOME/.linuxbrew/bin/brew shellenv)\"" >> ~/.profile; }'" ]
 
   - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; mkdir -p ~/.openclaw/workspace; cd ~/.openclaw/workspace; if [ ! -d openclaw/.git ]; then git clone --depth 1 --branch stable https://github.com/openclaw/openclaw.git; fi; cd openclaw; npm install; npm run build'" ]
   - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; cd ~/.openclaw/workspace/openclaw; npm install -g .; openclaw --version || true'" ]
