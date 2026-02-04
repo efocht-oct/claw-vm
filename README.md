@@ -14,9 +14,11 @@ Current design goals:
 
 ### Start VM
 
+By default the VM state is stored under `./ubuntu24-qemu`. If your current VM directory is `~/ubuntu24-qemu`, you can reuse it:
+
 ```bash
 cd scripts
-./run_claw_vm.sh
+VM_DIR="$HOME/ubuntu24-qemu" ./run_claw_vm.sh
 ```
 
 If the host uses NAT mode (no bridge), SSH will be available via the forwarded port (default 2222).
