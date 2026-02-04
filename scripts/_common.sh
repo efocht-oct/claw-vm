@@ -135,10 +135,11 @@ runcmd:
 
   - [ bash, -lc, "su - __VM_USER__ -c 'mkdir -p ~/.npm-global ~/.cache/npm ~/.config ~/.local/bin'" ]
 
-  # Ensure sane PATH for user-local tools
-  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q \"\\$HOME/.local/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.local/bin:$PATH\\\"\" >> ~/.profile'" ]
-
-  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q NPM_CONFIG_PREFIX ~/.profile 2>/dev/null || { echo \"export NPM_CONFIG_PREFIX=\\\"$HOME/.npm-global\\\"\" >> ~/.profile; echo \"export PATH=\\\"$HOME/.npm-global/bin:$PATH\\\"\" >> ~/.profile; }'" ]
+  # Ensure sane PATH + npm global prefix for the default user (idempotent)
+  # We *set* npm's prefix (writes ~/.npmrc) so `npm i -g ...` never tries /usr/lib/node_modules.
+  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; npm config set prefix \"$HOME/.npm-global\"'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q \"$HOME/.local/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.local/bin:$PATH\\\"\" >> ~/.profile'" ]
+  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q \"$HOME/.npm-global/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.npm-global/bin:$PATH\\\"\" >> ~/.profile'" ]
 
   # ---- Homebrew (Linuxbrew) in user HOME ----
   # NOTE: The previous implementation had quoting issues that could break cloud-init.
