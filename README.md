@@ -8,59 +8,150 @@ Current design goals:
 - Node/npm installs **in the user HOME** (no system-level npm global installs)
 - In the user's HOME we check out the OpenClaw GitHub repository (**stable** branch), install deps and build OpenClaw locally
 - Scripts for **backup/restore** of agent state are provided (optionally including secrets)
-- VM runs headless, with **XFCE over TigerVNC**, bound to **localhost only** (use SSH tunneling)
+- VM runs headless via QEMU, with per-VM **SSH** and **QEMU VNC** localhost ports
 
 ## Usage
 
-### Start VM
+### VM manager: `claw-vmctl`
 
-By default the VM state is stored under `./ubuntu24-qemu`. If your current VM directory is `~/ubuntu24-qemu`, you can reuse it:
-
-Create a `.env` file (optional) by copying the example:
+The primary entrypoint is:
 
 ```bash
-cp scripts/.env.example scripts/.env
-# edit scripts/.env
+./scripts/claw-vmctl
 ```
 
-Then build and start:
+Default base directory:
 
 ```bash
-cd scripts
-./build_claw_vm.sh
-./start_claw_vm.sh
+$HOME/ubuntu24-qemu-claw
 ```
 
-If the host uses NAT mode (no bridge), SSH will be available via the forwarded port (default 2222).
+Override base directory via:
 
-### Enable VNC inside the VM
+- `--base-dir <path>` option on every command, or
+- `CLAW_VM_BASE_DIR` environment variable.
 
-After first boot, SSH in and set a VNC password:
+### Directory layout
+
+```text
+<BASE_DIR>/
+  base/
+    ubuntu-24.04-server-cloudimg-amd64.img
+  vms/
+    <vm-id>/
+      .env
+      disk.qcow2
+      seed.iso
+      user-data
+      meta-data
+      runtime/
+        qemu.pid
+        qmp.sock
+      logs/
+        qemu.log
+        serial.log
+```
+
+The Ubuntu base image is shared once in `<BASE_DIR>/base/`, while each VM has its own overlay and runtime state.
+
+### Create, build, and start one VM
 
 ```bash
-vncpasswd
-systemctl --user start vncserver@1
+# create per-VM config file at <BASE_DIR>/vms/dev1/.env
+./scripts/claw-vmctl init dev1
+
+# build shared base image + VM overlay + cloud-init seed
+./scripts/claw-vmctl build dev1
+
+# start VM in background
+./scripts/claw-vmctl start dev1
+
+# inspect state
+./scripts/claw-vmctl status dev1
 ```
 
-On the host, tunnel VNC:
+### Create multiple VMs with distinct name/ports
 
 ```bash
-ssh -L 5901:127.0.0.1:5901 -p 2222 claw@127.0.0.1
+./scripts/claw-vmctl init dev1 --name noble-claw-dev1 --ssh-port 2222 --vnc-port 5901
+./scripts/claw-vmctl init dev2 --name noble-claw-dev2 --ssh-port 2223 --vnc-port 5902
+
+./scripts/claw-vmctl build dev1
+./scripts/claw-vmctl build dev2
+
+./scripts/claw-vmctl start dev1
+./scripts/claw-vmctl start dev2
+
+./scripts/claw-vmctl list
 ```
 
-Then connect your VNC client to `127.0.0.1:5901`.
+Connect:
+
+```bash
+ssh -p 2222 claw@127.0.0.1
+ssh -p 2223 claw@127.0.0.1
+```
+
+VNC clients:
+
+- VM `dev1` -> `127.0.0.1:5901`
+- VM `dev2` -> `127.0.0.1:5902`
+
+### Stop a VM
+
+```bash
+./scripts/claw-vmctl stop dev1
+```
+
+### Per-VM `.env`
+
+Per-VM config is stored inside the base directory, not globally in `scripts/`:
+
+```text
+<BASE_DIR>/vms/<vm-id>/.env
+```
+
+See example schema in:
+
+```bash
+scripts/.env.example
+```
+
+### Legacy wrappers (compatibility)
+
+These wrappers now call `claw-vmctl` for `default` VM:
+
+```bash
+./scripts/build_claw_vm.sh
+./scripts/start_claw_vm.sh
+```
+
+On first run they automatically migrate `scripts/.env` (if present) to:
+
+```text
+<BASE_DIR>/vms/default/.env
+```
 
 ## Backup / Restore
 
-Encrypted backup including secrets:
+Run backup inside a VM over SSH:
 
 ```bash
-./scripts/backup-openclaw.sh
+./scripts/claw-vmctl backup dev1
 ```
 
-Restore (overwrites files):
+This executes [`backup-openclaw.sh`](scripts/backup-openclaw.sh) inside the target VM user context and downloads the resulting archive to the host under `./backups` by default.
+
+Set a custom host output directory:
 
 ```bash
-./scripts/restore-openclaw.sh /path/to/openclaw-backup-*.tar.gpg
+./scripts/claw-vmctl backup dev1 --out-dir /path/on/host/backups
 ```
 
+Restore inside a VM over SSH (overwrites files):
+
+```bash
+./scripts/claw-vmctl restore dev1 /path/to/openclaw-backup-*.tar.gpg
+```
+
+If the archive path exists on the host, it is uploaded to the VM temporarily and removed after restore.

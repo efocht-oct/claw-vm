@@ -1,0 +1,611 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/_common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  claw-vmctl <command> [<vm-id>] [--base-dir <path>] [options]
+
+Commands:
+  init <vm-id>      Create per-VM .env with defaults.
+  build <vm-id>     Ensure shared base image, create overlay, generate cloud-init seed.
+  start <vm-id>     Start VM in background with per-VM SSH and QEMU VNC port.
+  stop <vm-id>      Stop running VM.
+  status <vm-id>    Show VM state and key paths.
+  backup <vm-id>    SSH into VM and run backup-openclaw.sh.
+  restore <vm-id> <archive>
+                    SSH into VM and run restore-openclaw.sh.
+  list              List VMs found under base directory.
+
+Options (init):
+  --name <name>         VM_NAME override.
+  --ssh-port <port>     SSH_FWD_PORT override.
+  --vnc-port <port>     QEMU_VNC_PORT override.
+  --ram-mb <mb>         RAM_MB override (default 4096).
+  --cpus <n>            CPUS override (default 2).
+  --disk-gb <gb>        DISK_GB override (default 30).
+  --bridge <name>       BRIDGE override (default empty = NAT).
+  --vm-user <user>      VM_USER override (default claw).
+
+Options (backup):
+  --out-dir <path>      Host directory for downloaded backup archive (default: ./backups).
+EOF
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+resolve_args() {
+  COMMAND="${1:-}"
+  shift || true
+
+  VM_ID_ARG=""
+  BASE_DIR_ARG=""
+
+  INIT_NAME=""
+  INIT_SSH_PORT=""
+  INIT_VNC_PORT=""
+  INIT_RAM_MB=""
+  INIT_CPUS=""
+  INIT_DISK_GB=""
+  INIT_BRIDGE=""
+  INIT_VM_USER=""
+  BACKUP_OUT_DIR_ARG=""
+  RESTORE_ARCHIVE_ARG=""
+
+  if [[ -n "${1:-}" && "${1:-}" != --* ]]; then
+    VM_ID_ARG="$1"
+    shift
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base-dir)
+        [[ $# -ge 2 ]] || die "--base-dir requires a value"
+        BASE_DIR_ARG="$2"
+        shift 2
+        ;;
+      --name)
+        [[ $# -ge 2 ]] || die "--name requires a value"
+        INIT_NAME="$2"
+        shift 2
+        ;;
+      --ssh-port)
+        [[ $# -ge 2 ]] || die "--ssh-port requires a value"
+        INIT_SSH_PORT="$2"
+        shift 2
+        ;;
+      --vnc-port)
+        [[ $# -ge 2 ]] || die "--vnc-port requires a value"
+        INIT_VNC_PORT="$2"
+        shift 2
+        ;;
+      --ram-mb)
+        [[ $# -ge 2 ]] || die "--ram-mb requires a value"
+        INIT_RAM_MB="$2"
+        shift 2
+        ;;
+      --cpus)
+        [[ $# -ge 2 ]] || die "--cpus requires a value"
+        INIT_CPUS="$2"
+        shift 2
+        ;;
+      --disk-gb)
+        [[ $# -ge 2 ]] || die "--disk-gb requires a value"
+        INIT_DISK_GB="$2"
+        shift 2
+        ;;
+      --bridge)
+        [[ $# -ge 2 ]] || die "--bridge requires a value"
+        INIT_BRIDGE="$2"
+        shift 2
+        ;;
+      --vm-user)
+        [[ $# -ge 2 ]] || die "--vm-user requires a value"
+        INIT_VM_USER="$2"
+        shift 2
+        ;;
+      --out-dir)
+        [[ $# -ge 2 ]] || die "--out-dir requires a value"
+        BACKUP_OUT_DIR_ARG="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        if [[ "$COMMAND" == "restore" && -z "$RESTORE_ARCHIVE_ARG" ]]; then
+          RESTORE_ARCHIVE_ARG="$1"
+          shift
+        else
+          die "unknown option: $1"
+        fi
+        ;;
+    esac
+  done
+
+  BASE_DIR="$(resolve_base_dir "$BASE_DIR_ARG")"
+}
+
+default_vm_name_for() {
+  local vm_id="$1"
+  printf 'noble-claw-%s\n' "$vm_id"
+}
+
+default_env_content() {
+  local vm_id="$1"
+  local vm_name="$2"
+  local vm_user="$3"
+  local ram_mb="$4"
+  local cpus="$5"
+  local disk_gb="$6"
+  local bridge="$7"
+  local ssh_port="$8"
+  local vnc_port="$9"
+
+  cat <<EOF
+# Per-VM configuration for claw-vmctl
+VM_ID="$vm_id"
+VM_NAME="$vm_name"
+VM_USER="$vm_user"
+
+# VM resources
+RAM_MB=$ram_mb
+CPUS=$cpus
+DISK_GB=$disk_gb
+
+# Networking
+# Leave BRIDGE empty for NAT mode, or set to existing host bridge name (e.g. br0)
+BRIDGE="$bridge"
+SSH_FWD_PORT=$ssh_port
+QEMU_VNC_PORT=$vnc_port
+
+# SSH public key (optional; fallback: ~/.ssh/id_rsa.pub or ~/.ssh/id_ed25519.pub)
+# SSH_PUBKEY="ssh-ed25519 AAAA..."
+EOF
+}
+
+init_vm() {
+  validate_vm_id "$VM_ID_ARG" || exit 1
+  set_vm_paths "$BASE_DIR" "$VM_ID_ARG"
+  ensure_vm_dirs
+
+  if [[ -f "$VM_ENV_FILE" ]]; then
+    echo "VM config already exists: $VM_ENV_FILE"
+    return
+  fi
+
+  local vm_name vm_user ram_mb cpus disk_gb bridge ssh_port vnc_port
+  vm_name="${INIT_NAME:-$(default_vm_name_for "$VM_ID_ARG")}"
+  vm_user="${INIT_VM_USER:-claw}"
+  ram_mb="${INIT_RAM_MB:-4096}"
+  cpus="${INIT_CPUS:-2}"
+  disk_gb="${INIT_DISK_GB:-30}"
+  bridge="${INIT_BRIDGE:-}"
+  ssh_port="${INIT_SSH_PORT:-2222}"
+  vnc_port="${INIT_VNC_PORT:-5901}"
+
+  validate_int "RAM_MB" "$ram_mb"
+  validate_int "CPUS" "$cpus"
+  validate_int "DISK_GB" "$disk_gb"
+  validate_port "SSH_FWD_PORT" "$ssh_port"
+  validate_port "QEMU_VNC_PORT" "$vnc_port"
+
+  default_env_content "$VM_ID_ARG" "$vm_name" "$vm_user" "$ram_mb" "$cpus" "$disk_gb" "$bridge" "$ssh_port" "$vnc_port" > "$VM_ENV_FILE"
+
+  echo "Created: $VM_ENV_FILE"
+}
+
+migrate_legacy_default_env_if_needed() {
+  local legacy_env="$SCRIPT_DIR/.env"
+  set_vm_paths "$BASE_DIR" "default"
+
+  if [[ -f "$VM_ENV_FILE" || ! -f "$legacy_env" ]]; then
+    return
+  fi
+
+  echo "Migrating legacy config from $legacy_env -> $VM_ENV_FILE"
+  mkdir -p "$VM_DIR"
+
+  (
+    # shellcheck disable=SC1090
+    source "$legacy_env"
+    cat <<EOF
+VM_ID="default"
+VM_NAME="${VM_NAME:-noble-claw}"
+VM_USER="${VM_USER:-claw}"
+RAM_MB=${RAM_MB:-4096}
+CPUS=${CPUS:-2}
+DISK_GB=${DISK_GB:-30}
+BRIDGE="${BRIDGE:-}"
+SSH_FWD_PORT=${SSH_FWD_PORT:-2222}
+QEMU_VNC_PORT=5901
+${SSH_PUBKEY:+SSH_PUBKEY="$SSH_PUBKEY"}
+EOF
+  ) > "$VM_ENV_FILE"
+
+  echo "Migration completed. Per-VM config created at $VM_ENV_FILE"
+}
+
+collect_vm_env_files() {
+  local vm_root="$BASE_DIR/vms"
+  [[ -d "$vm_root" ]] || return 0
+  find "$vm_root" -mindepth 2 -maxdepth 2 -type f -name .env | sort
+}
+
+check_port_conflicts_across_vms() {
+  local this_vm="$VM_ID"
+  local this_ssh="$SSH_FWD_PORT"
+  local this_vnc="$QEMU_VNC_PORT"
+
+  while IFS= read -r envf; do
+    [[ -n "$envf" ]] || continue
+    local other_id other_ssh other_vnc
+    other_id="$(env_get "$envf" "VM_ID")"
+    [[ -n "$other_id" ]] || other_id="$(basename "$(dirname "$envf")")"
+    [[ "$other_id" == "$this_vm" ]] && continue
+
+    other_ssh="$(env_get "$envf" "SSH_FWD_PORT")"
+    other_vnc="$(env_get "$envf" "QEMU_VNC_PORT")"
+
+    if [[ -n "$other_ssh" && "$other_ssh" == "$this_ssh" ]]; then
+      die "SSH port conflict: VM '$this_vm' and '$other_id' both use $this_ssh"
+    fi
+    if [[ -n "$other_vnc" && "$other_vnc" == "$this_vnc" ]]; then
+      die "VNC port conflict: VM '$this_vm' and '$other_id' both use $this_vnc"
+    fi
+  done < <(collect_vm_env_files)
+}
+
+build_vm() {
+  validate_vm_id "$VM_ID_ARG" || exit 1
+  set_vm_paths "$BASE_DIR" "$VM_ID_ARG"
+  ensure_vm_dirs
+
+  if [[ ! -f "$VM_ENV_FILE" ]]; then
+    die "missing VM env: $VM_ENV_FILE. Run: $(basename "$0") init $VM_ID_ARG --base-dir '$BASE_DIR'"
+  fi
+
+  load_vm_env "$VM_ENV_FILE" "$VM_ID_ARG"
+  validate_vm_config
+  check_port_conflicts_across_vms
+
+  ensure_base_image
+  ensure_overlay_image
+  write_cloud_init_seed
+
+  echo "Build complete for VM '$VM_ID'"
+  echo "  disk: $VM_DISK_IMG"
+  echo "  seed: $VM_SEED_IMG"
+}
+
+build_net_args() {
+  NET_ARGS=()
+  local mode
+  mode="$(net_mode)"
+  if [[ "$mode" == "bridge" ]]; then
+    NET_ARGS=(
+      -netdev "bridge,id=net0,br=${BRIDGE}"
+      -device "virtio-net-pci,netdev=net0"
+    )
+  else
+    NET_ARGS=(
+      -netdev "user,id=net0,hostfwd=tcp::${SSH_FWD_PORT}-:22"
+      -device "virtio-net-pci,netdev=net0"
+    )
+  fi
+  NET_MODE="$mode"
+}
+
+start_vm() {
+  validate_vm_id "$VM_ID_ARG" || exit 1
+  set_vm_paths "$BASE_DIR" "$VM_ID_ARG"
+
+  if [[ ! -f "$VM_ENV_FILE" ]]; then
+    die "missing VM env: $VM_ENV_FILE. Run: $(basename "$0") init $VM_ID_ARG --base-dir '$BASE_DIR'"
+  fi
+
+  load_vm_env "$VM_ENV_FILE" "$VM_ID_ARG"
+  validate_vm_config
+  check_port_conflicts_across_vms
+
+  if [[ ! -f "$VM_DISK_IMG" || ! -f "$VM_SEED_IMG" ]]; then
+    die "missing build artifacts. Run: $(basename "$0") build $VM_ID_ARG --base-dir '$BASE_DIR'"
+  fi
+
+  ensure_vm_dirs
+  if is_vm_running; then
+    echo "VM '$VM_ID' is already running (pid $(cat "$VM_PID_FILE"))"
+    return
+  fi
+
+  cleanup_runtime_files
+  build_net_args
+
+  local display
+  display="$(qemu_vnc_display)"
+
+  echo "Starting VM '$VM_ID'"
+  echo "  Name         : $VM_NAME"
+  echo "  Base dir     : $BASE_DIR"
+  echo "  Overlay disk : $VM_DISK_IMG"
+  echo "  Seed image   : $VM_SEED_IMG"
+  echo "  SSH forward  : 127.0.0.1:${SSH_FWD_PORT} -> guest:22"
+  echo "  QEMU VNC     : 127.0.0.1:${QEMU_VNC_PORT} (display :$display)"
+  echo "  Network mode : $NET_MODE"
+
+  qemu-system-x86_64 \
+    -enable-kvm \
+    -cpu host \
+    -smp "$CPUS" \
+    -m "$RAM_MB" \
+    -machine q35 \
+    -drive "file=${VM_DISK_IMG},if=virtio,cache=writeback,discard=unmap,format=qcow2" \
+    -drive "file=${VM_SEED_IMG},if=virtio,media=cdrom" \
+    "${NET_ARGS[@]}" \
+    -device virtio-rng-pci \
+    -display none \
+    -vnc "127.0.0.1:${display}" \
+    -qmp "unix:${VM_QMP_SOCK},server=on,wait=off" \
+    -serial "file:${VM_SERIAL_LOG}" \
+    -daemonize \
+    -pidfile "$VM_PID_FILE" \
+    -D "$VM_QEMU_LOG"
+
+  echo "Started. PID: $(cat "$VM_PID_FILE")"
+}
+
+send_qmp_quit() {
+  local sock="$1"
+
+  if ! command -v socat >/dev/null 2>&1; then
+    return 1
+  fi
+  [[ -S "$sock" ]] || return 1
+
+  {
+    printf '{"execute":"qmp_capabilities"}\n'
+    printf '{"execute":"quit"}\n'
+  } | socat - UNIX-CONNECT:"$sock" >/dev/null 2>&1
+}
+
+stop_vm() {
+  validate_vm_id "$VM_ID_ARG" || exit 1
+  set_vm_paths "$BASE_DIR" "$VM_ID_ARG"
+
+  if ! is_vm_running; then
+    cleanup_runtime_files
+    echo "VM '$VM_ID' is not running"
+    return
+  fi
+
+  local pid
+  pid="$(cat "$VM_PID_FILE")"
+
+  if send_qmp_quit "$VM_QMP_SOCK"; then
+    echo "Requested graceful shutdown via QMP for VM '$VM_ID'"
+    for _ in {1..30}; do
+      if ! kill -0 "$pid" >/dev/null 2>&1; then
+        cleanup_runtime_files
+        echo "VM '$VM_ID' stopped"
+        return
+      fi
+      sleep 1
+    done
+  fi
+
+  kill "$pid" >/dev/null 2>&1 || true
+  for _ in {1..10}; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      cleanup_runtime_files
+      echo "VM '$VM_ID' stopped"
+      return
+    fi
+    sleep 1
+  done
+
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  cleanup_runtime_files
+  echo "VM '$VM_ID' force-stopped"
+}
+
+status_vm() {
+  validate_vm_id "$VM_ID_ARG" || exit 1
+  set_vm_paths "$BASE_DIR" "$VM_ID_ARG"
+
+  if [[ ! -f "$VM_ENV_FILE" ]]; then
+    die "missing VM env: $VM_ENV_FILE"
+  fi
+
+  load_vm_env "$VM_ENV_FILE" "$VM_ID_ARG"
+
+  echo "VM_ID         : $VM_ID"
+  echo "VM_NAME       : $VM_NAME"
+  echo "BASE_DIR      : $BASE_DIR"
+  echo "VM_DIR        : $VM_DIR"
+  echo "ENV_FILE      : $VM_ENV_FILE"
+  echo "DISK          : $VM_DISK_IMG"
+  echo "SEED          : $VM_SEED_IMG"
+  echo "SSH_FWD_PORT  : $SSH_FWD_PORT"
+  echo "QEMU_VNC_PORT : $QEMU_VNC_PORT"
+
+  if is_vm_running; then
+    echo "STATE         : running (pid $(cat "$VM_PID_FILE"))"
+  else
+    echo "STATE         : stopped"
+  fi
+}
+
+list_vms() {
+  local vm_root="$BASE_DIR/vms"
+  if [[ ! -d "$vm_root" ]]; then
+    echo "No VMs found under: $vm_root"
+    return
+  fi
+
+  printf '%-16s %-24s %-8s %-8s %-10s %s\n' "VM_ID" "VM_NAME" "SSH" "VNC" "STATE" "ENV"
+  printf '%-16s %-24s %-8s %-8s %-10s %s\n' "-----" "-------" "---" "---" "-----" "---"
+
+  while IFS= read -r envf; do
+    [[ -n "$envf" ]] || continue
+    local vmid vname sshp vncp state vm_dir
+    vmid="$(env_get "$envf" "VM_ID")"
+    [[ -n "$vmid" ]] || vmid="$(basename "$(dirname "$envf")")"
+    vname="$(env_get "$envf" "VM_NAME")"
+    sshp="$(env_get "$envf" "SSH_FWD_PORT")"
+    vncp="$(env_get "$envf" "QEMU_VNC_PORT")"
+
+    set_vm_paths "$BASE_DIR" "$vmid"
+    if is_vm_running; then
+      state="running"
+    else
+      state="stopped"
+    fi
+
+    printf '%-16s %-24s %-8s %-8s %-10s %s\n' "$vmid" "${vname:--}" "${sshp:--}" "${vncp:--}" "$state" "$envf"
+  done < <(collect_vm_env_files)
+}
+
+prepare_vm_ssh_op() {
+  validate_vm_id "$VM_ID_ARG" || exit 1
+  set_vm_paths "$BASE_DIR" "$VM_ID_ARG"
+
+  if [[ ! -f "$VM_ENV_FILE" ]]; then
+    die "missing VM env: $VM_ENV_FILE. Run: $(basename "$0") init $VM_ID_ARG --base-dir '$BASE_DIR'"
+  fi
+
+  load_vm_env "$VM_ENV_FILE" "$VM_ID_ARG"
+  validate_vm_config
+
+  if ! is_vm_running; then
+    die "VM '$VM_ID' is not running. Run: $(basename "$0") start $VM_ID_ARG --base-dir '$BASE_DIR'"
+  fi
+
+  need_cmd ssh
+}
+
+backup_vm() {
+  prepare_vm_ssh_op
+
+  local target host_out_dir remote_tmp_dir remote_archive
+  target="${VM_USER}@127.0.0.1"
+  host_out_dir="${BACKUP_OUT_DIR_ARG:-$PWD/backups}"
+  remote_tmp_dir="/tmp/claw-backup-${VM_ID}-$(date +%s)-$$"
+
+  need_cmd scp
+  mkdir -p "$host_out_dir"
+
+  echo "Running backup script inside VM '$VM_ID' via SSH"
+  ssh -tt -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+    "$target" "set -euo pipefail; mkdir -p '$remote_tmp_dir'; OUT_DIR='$remote_tmp_dir' bash -s" < "$SCRIPT_DIR/backup-openclaw.sh"
+
+  remote_archive="$(ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+    "$target" "set -euo pipefail; ls -1 '$remote_tmp_dir'/openclaw-backup-*.tar.gpg | sort | tail -n 1")"
+  [[ -n "$remote_archive" ]] || die "backup completed but no archive was found in VM temp dir"
+
+  echo "Downloading backup archive to host: $host_out_dir"
+  scp -P "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+    "$target:$remote_archive" "$host_out_dir/"
+
+  ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+    "$target" "rm -rf -- '$remote_tmp_dir'" >/dev/null 2>&1 || true
+
+  echo "Backup downloaded to host directory: $host_out_dir"
+}
+
+restore_vm() {
+  prepare_vm_ssh_op
+
+  [[ -n "$RESTORE_ARCHIVE_ARG" ]] || {
+    die "restore requires <archive> argument"
+  }
+
+  local target archive_for_vm uploaded archive_quoted
+  target="${VM_USER}@127.0.0.1"
+  archive_for_vm="$RESTORE_ARCHIVE_ARG"
+  uploaded=0
+
+  if [[ -f "$RESTORE_ARCHIVE_ARG" ]]; then
+    need_cmd scp
+    archive_for_vm="/tmp/claw-restore-${VM_ID}-$(date +%s)-$$.tar.gpg"
+    echo "Uploading archive to VM: $RESTORE_ARCHIVE_ARG -> $archive_for_vm"
+    scp -P "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+      "$RESTORE_ARCHIVE_ARG" "$target:$archive_for_vm"
+    uploaded=1
+  fi
+
+  archive_quoted="$(printf '%q' "$archive_for_vm")"
+  echo "Running restore script inside VM '$VM_ID' via SSH"
+  if ! ssh -tt -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+    "$target" "bash -s -- $archive_quoted" < "$SCRIPT_DIR/restore-openclaw.sh"; then
+    if [[ "$uploaded" -eq 1 ]]; then
+      ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+        "$target" "rm -f -- $archive_quoted" >/dev/null 2>&1 || true
+    fi
+    die "restore failed for VM '$VM_ID'"
+  fi
+
+  if [[ "$uploaded" -eq 1 ]]; then
+    ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
+      "$target" "rm -f -- $archive_quoted" >/dev/null 2>&1 || true
+  fi
+}
+
+main() {
+  resolve_args "$@"
+
+  case "$COMMAND" in
+    init)
+      [[ -n "$VM_ID_ARG" ]] || die "init requires <vm-id>"
+      init_vm
+      ;;
+    build)
+      [[ -n "$VM_ID_ARG" ]] || die "build requires <vm-id>"
+      ensure_host_deps
+      migrate_legacy_default_env_if_needed
+      build_vm
+      ;;
+    start)
+      [[ -n "$VM_ID_ARG" ]] || die "start requires <vm-id>"
+      ensure_host_deps
+      migrate_legacy_default_env_if_needed
+      start_vm
+      ;;
+    stop)
+      [[ -n "$VM_ID_ARG" ]] || die "stop requires <vm-id>"
+      stop_vm
+      ;;
+    status)
+      [[ -n "$VM_ID_ARG" ]] || die "status requires <vm-id>"
+      status_vm
+      ;;
+    list)
+      list_vms
+      ;;
+    backup)
+      [[ -n "$VM_ID_ARG" ]] || die "backup requires <vm-id>"
+      migrate_legacy_default_env_if_needed
+      backup_vm
+      ;;
+    restore)
+      [[ -n "$VM_ID_ARG" ]] || die "restore requires <vm-id>"
+      migrate_legacy_default_env_if_needed
+      restore_vm
+      ;;
+    -h|--help|help|"")
+      usage
+      ;;
+    *)
+      die "unknown command: $COMMAND"
+      ;;
+  esac
+}
+
+main "$@"
