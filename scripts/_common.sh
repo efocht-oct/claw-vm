@@ -65,7 +65,7 @@ parse_vm_env_line() {
   local line="$1"
   local out_key_var="$2"
   local out_val_var="$3"
-  local key value
+  local lkey lvalue
 
   line="${line%$'\r'}"
   if [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]]; then
@@ -76,20 +76,20 @@ parse_vm_env_line() {
     return 1
   fi
 
-  key="${BASH_REMATCH[2]}"
-  value="$(trim_ws "${BASH_REMATCH[3]}")"
+  lkey="${BASH_REMATCH[2]}"
+  lvalue="$(trim_ws "${BASH_REMATCH[3]}")"
 
-  if [[ "$value" =~ ^\"(.*)\"$ ]]; then
-    value="${BASH_REMATCH[1]}"
-  elif [[ "$value" =~ ^\'(.*)\'$ ]]; then
-    value="${BASH_REMATCH[1]}"
+  if [[ "$lvalue" =~ ^\"(.*)\"$ ]]; then
+    lvalue="${BASH_REMATCH[1]}"
+  elif [[ "$lvalue" =~ ^\'(.*)\'$ ]]; then
+    lvalue="${BASH_REMATCH[1]}"
   else
-    value="${value%%[[:space:]]#*}"
-    value="$(trim_ws "$value")"
+    lvalue="${lvalue%%[[:space:]]#*}"
+    lvalue="$(trim_ws "$lvalue")"
   fi
 
-  printf -v "$out_key_var" '%s' "$key"
-  printf -v "$out_val_var" '%s' "$value"
+  printf -v "$out_key_var" '%s' "$lkey"
+  printf -v "$out_val_var" '%s' "$lvalue"
   return 0
 }
 
@@ -170,19 +170,19 @@ load_vm_env() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     line_no=$((line_no + 1))
+    echo "line=$line"
     if parse_vm_env_line "$line" key value; then
       parse_rc=0
     else
       parse_rc=$?
     fi
-    if [[ "$parse_rc" -eq 2 ]]; then
+    if [[ "$parse_rc" == 2 ]]; then
       continue
     fi
     if [[ "$parse_rc" -ne 0 ]]; then
       echo "ERROR: invalid line in VM env file at ${env_file}:${line_no}"
       return 1
     fi
-
     if ! is_allowed_vm_env_key "$key"; then
       echo "ERROR: unsupported key '$key' in VM env file at ${env_file}:${line_no}"
       return 1
