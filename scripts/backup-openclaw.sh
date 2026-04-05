@@ -55,8 +55,13 @@ tar \
   "${EXISTING[@]}"
 
 echo "Encrypting with GPG (symmetric). Output: $ENC_TAR"
-# Prompts for passphrase interactively.
-gpg --symmetric --cipher-algo AES256 --output "$ENC_TAR" "$PLAIN_TAR"
+# Prompts for passphrase interactively unless BACKUP_GPG_PASSPHRASE is provided.
+if [[ -n "${BACKUP_GPG_PASSPHRASE:-}" ]]; then
+  gpg --batch --yes --pinentry-mode loopback --passphrase "$BACKUP_GPG_PASSPHRASE" \
+    --symmetric --cipher-algo AES256 --output "$ENC_TAR" "$PLAIN_TAR"
+else
+  gpg --symmetric --cipher-algo AES256 --output "$ENC_TAR" "$PLAIN_TAR"
+fi
 
 # Remove plaintext tar after encryption
 rm -f "$PLAIN_TAR"

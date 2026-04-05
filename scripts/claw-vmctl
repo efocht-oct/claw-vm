@@ -274,8 +274,30 @@ build_vm() {
   fi
 
   load_vm_env "$VM_ENV_FILE" "$VM_ID_ARG"
+  # Always update SSH_PUBKEY from host to ensure it's current for cloud-init
+  host_pk="$(default_ssh_pubkey)"
+  if [[ -n "$host_pk" ]]; then
+    if [[ -z "${SSH_PUBKEY:-}" ]] || [[ "${SSH_PUBKEY}" != "${host_pk}" ]]; then
+      echo "Updating SSH_PUBKEY in $VM_ENV_FILE with current host public key"
+      # Remove old SSH_PUBKEY lines if present
+      sed -i '/^SSH_PUBKEY=/d' "$VM_ENV_FILE"
+      # Append new one
+      printf '\nSSH_PUBKEY="%s"\n' "$host_pk" >> "$VM_ENV_FILE"
+      SSH_PUBKEY="$host_pk"
+    fi
+  fi
   validate_vm_config
   check_port_conflicts_across_vms
+
+  # Force rebuild: remove old overlay and seed so new changes are picked up
+  if [[ -f "$VM_DISK_IMG" ]]; then
+    echo "Removing old overlay disk: $VM_DISK_IMG"
+    rm -f "$VM_DISK_IMG"
+  fi
+  if [[ -f "$VM_SEED_IMG" ]]; then
+    echo "Removing old seed image: $VM_SEED_IMG"
+    rm -f "$VM_SEED_IMG"
+  fi
 
   ensure_base_image
   ensure_overlay_image
@@ -313,6 +335,18 @@ start_vm() {
   fi
 
   load_vm_env "$VM_ENV_FILE" "$VM_ID_ARG"
+  # Always ensure SSH_PUBKEY is current from host
+  set +x
+  host_pk="$(default_ssh_pubkey)"
+  if [[ -n "$host_pk" ]]; then
+    if [[ -z "${SSH_PUBKEY:-}" ]] || [[ "${SSH_PUBKEY}" != "${host_pk}" ]]; then
+      echo "Updating SSH_PUBKEY in $VM_ENV_FILE with current host public key"
+      sed -i '/^SSH_PUBKEY=/d' "$VM_ENV_FILE"
+      printf '\nSSH_PUBKEY="%s"\n' "$host_pk" >> "$VM_ENV_FILE"
+      SSH_PUBKEY="$host_pk"
+    fi
+  fi
+  set -x
   validate_vm_config
   check_port_conflicts_across_vms
 
@@ -341,23 +375,30 @@ start_vm() {
   echo "  QEMU VNC     : 127.0.0.1:${QEMU_VNC_PORT} (display :$display)"
   echo "  Network mode : $NET_MODE"
 
-  qemu-system-x86_64 \
-    -enable-kvm \
-    -cpu host \
-    -smp "$CPUS" \
-    -m "$RAM_MB" \
-    -machine q35 \
-    -drive "file=${VM_DISK_IMG},if=virtio,cache=writeback,discard=unmap,format=qcow2" \
-    -drive "file=${VM_SEED_IMG},if=virtio,media=cdrom" \
-    "${NET_ARGS[@]}" \
-    -device virtio-rng-pci \
-    -display none \
-    -vnc "127.0.0.1:${display}" \
-    -qmp "unix:${VM_QMP_SOCK},server=on,wait=off" \
-    -serial "file:${VM_SERIAL_LOG}" \
-    -daemonize \
-    -pidfile "$VM_PID_FILE" \
+  # Construct and print full qemu command before executing
+  QEMU_CMD=(qemu-system-x86_64
+    -enable-kvm
+    -cpu host
+    -smp "$CPUS"
+    -m "$RAM_MB"
+    -machine q35
+    -drive "file=${VM_DISK_IMG},if=virtio,cache=writeback,discard=unmap,format=qcow2"
+    -drive "file=${VM_SEED_IMG},if=virtio,media=cdrom"
+    "${NET_ARGS[@]}"
+    -device virtio-rng-pci
+    -display none
+    -vnc "127.0.0.1:${display}"
+    -qmp "unix:${VM_QMP_SOCK},server=on,wait=off"
+    -serial "file:${VM_SERIAL_LOG}"
+    -daemonize
+    -pidfile "$VM_PID_FILE"
     -D "$VM_QEMU_LOG"
+  )
+
+  echo "DEBUG: executing qemu (shown as a single line)"
+  printf '%q ' "${QEMU_CMD[@]}"
+  echo
+  "${QEMU_CMD[@]}"
 
   echo "Started. PID: $(cat "$VM_PID_FILE")"
 }
@@ -503,8 +544,13 @@ backup_vm() {
   mkdir -p "$host_out_dir"
 
   echo "Running backup script inside VM '$VM_ID' via SSH"
+  local backup_env_prefix
+  backup_env_prefix=""
+  if [[ -n "${BACKUP_GPG_PASSPHRASE:-}" ]]; then
+    backup_env_prefix="BACKUP_GPG_PASSPHRASE=$(printf '%q' "$BACKUP_GPG_PASSPHRASE") "
+  fi
   ssh -tt -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
-    "$target" "set -euo pipefail; mkdir -p '$remote_tmp_dir'; OUT_DIR='$remote_tmp_dir' bash -s" < "$SCRIPT_DIR/backup-openclaw.sh"
+    "$target" "set -euo pipefail; mkdir -p '$remote_tmp_dir'; ${backup_env_prefix}OUT_DIR='$remote_tmp_dir' bash -s" < "$SCRIPT_DIR/backup-openclaw.sh"
 
   remote_archive="$(ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
     "$target" "set -euo pipefail; ls -1 '$remote_tmp_dir'/openclaw-backup-*.tar.gpg | sort | tail -n 1")"
@@ -543,8 +589,13 @@ restore_vm() {
 
   archive_quoted="$(printf '%q' "$archive_for_vm")"
   echo "Running restore script inside VM '$VM_ID' via SSH"
+  local restore_env_prefix
+  restore_env_prefix=""
+  if [[ -n "${RESTORE_GPG_PASSPHRASE:-}" ]]; then
+    restore_env_prefix="RESTORE_GPG_PASSPHRASE=$(printf '%q' "$RESTORE_GPG_PASSPHRASE") "
+  fi
   if ! ssh -tt -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
-    "$target" "bash -s -- $archive_quoted" < "$SCRIPT_DIR/restore-openclaw.sh"; then
+    "$target" "${restore_env_prefix}bash -s -- $archive_quoted" < "$SCRIPT_DIR/restore-openclaw.sh"; then
     if [[ "$uploaded" -eq 1 ]]; then
       ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
         "$target" "rm -f -- $archive_quoted" >/dev/null 2>&1 || true

@@ -135,12 +135,14 @@ ensure_vm_dirs() {
 }
 
 default_ssh_pubkey() {
-  if [[ -f "$HOME/.ssh/id_rsa.pub" ]]; then
-    cat "$HOME/.ssh/id_rsa.pub"
+  if [[ -f "$HOME/.ssh/id_ed25519.pub" ]]; then
+    # Remove all newlines and output as single line
+    sed 's/[[:space:]]*$//' < "$HOME/.ssh/id_ed25519.pub" | tr -d '\n'
     return
   fi
-  if [[ -f "$HOME/.ssh/id_ed25519.pub" ]]; then
-    cat "$HOME/.ssh/id_ed25519.pub"
+  if [[ -f "$HOME/.ssh/id_rsa.pub" ]]; then
+    # Remove all newlines and output as single line
+    sed 's/[[:space:]]*$//' < "$HOME/.ssh/id_rsa.pub" | tr -d '\n'
     return
   fi
   true
@@ -170,7 +172,7 @@ load_vm_env() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     line_no=$((line_no + 1))
-    echo "line=$line"
+    #echo "line=$line"
     if parse_vm_env_line "$line" key value; then
       parse_rc=0
     else
@@ -322,6 +324,31 @@ write_files:
         eval "$(/home/__VM_USER__/.linuxbrew/bin/brew shellenv)"
       fi
 
+  - path: /etc/profile.d/pnpm.sh
+    permissions: '0644'
+    content: |
+      # PNPM and npm global bin for OpenClaw user
+      export PNPM_HOME="/home/__VM_USER__/.local/share/pnpm"
+      export PATH="/home/__VM_USER__/.npm-global/bin:$PNPM_HOME:$PATH"
+
+  - path: /home/__VM_USER__/.bashrc.d/
+    type: directory
+    owner: __VM_USER__
+    group: __VM_USER__
+    permissions: '0755'
+
+  - path: /home/__VM_USER__/.bashrc.d/bashrc-init.sh
+    permissions: '0644'
+    owner: __VM_USER__
+    group: __VM_USER__
+    content: |
+      # Source /etc/profile.d for pnpm and brew in interactive shells
+      for f in /etc/profile.d/*.sh; do
+        if [ -f "$f" ]; then
+          source "$f" 2>/dev/null || true
+        fi
+      done
+
 packages:
   - git
   - build-essential
@@ -351,31 +378,41 @@ runcmd:
   - [ bash, -lc, "DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs" ]
   - [ bash, -lc, "command -v npm >/dev/null 2>&1 || (DEBIAN_FRONTEND=noninteractive apt-get install -y npm)" ]
   - [ bash, -lc, "node -v && npm -v" ]
+  - [ bash, -lc, "chown -R __VM_USER__:__VM_USER__ /home/__VM_USER__" ]
 
-  - [ bash, -lc, "su - __VM_USER__ -c 'mkdir -p ~/.npm-global ~/.cache/npm ~/.config ~/.local/bin'" ]
-  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; npm config set prefix \"$HOME/.npm-global\"'" ]
-  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q \"$HOME/.local/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.local/bin:$PATH\\\"\" >> ~/.profile'" ]
-  - [ bash, -lc, "su - __VM_USER__ -c 'grep -q \"$HOME/.npm-global/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.npm-global/bin:$PATH\\\"\" >> ~/.profile'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'mkdir -p ~/.npm-global ~/.cache/npm ~/.config ~/.local/bin'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; npm config set prefix \"$HOME/.npm-global\"'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'grep -q \"$HOME/.local/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.local/bin:\\$PATH\\\"\" >> ~/.profile'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'grep -q \"$HOME/.npm-global/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"$HOME/.npm-global/bin:\\$PATH\\\"\" >> ~/.profile'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'grep -q \"/home/linuxbrew/.linuxbrew/bin\" ~/.profile 2>/dev/null || echo \"export PATH=\\\"/home/linuxbrew/.linuxbrew/bin:\\$PATH\\\"\" >> ~/.profile'" ]
+
+  - [ bash, -lc, "grep -q bashrc.d ~/.bashrc || sudo -u __VM_USER__ sh -c 'mkdir -p ~/.bashrc.d && echo \". ~/.bashrc.d/bashrc-init.sh\" >> ~/.bashrc'" ]
 
   - [ bash, -lc, "curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/brew-install.sh" ]
   - [ bash, -lc, "chmod +x /tmp/brew-install.sh" ]
-  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; if [ ! -x ~/.linuxbrew/bin/brew ]; then NONINTERACTIVE=1 /bin/bash /tmp/brew-install.sh; fi'" ]
-  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; $HOME/.linuxbrew/bin/brew --version || true'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then NONINTERACTIVE=1 /bin/bash /tmp/brew-install.sh; fi'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; /home/linuxbrew/.linuxbrew/bin/brew --version || true'" ]
 
-  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; mkdir -p ~/.openclaw/workspace; cd ~/.openclaw/workspace; if [ ! -d openclaw/.git ]; then git clone --depth 1 --branch stable https://github.com/openclaw/openclaw.git; fi; cd openclaw; npm install; npm run build'" ]
-  - [ bash, -lc, "su - __VM_USER__ -c 'set -euo pipefail; source ~/.profile; cd ~/.openclaw/workspace/openclaw; npm install -g .; openclaw --version || true'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; source ~/.profile; mkdir -p \"$HOME/.npm-global\" \"$HOME/.local/share/pnpm\"; npm install -g pnpm --prefix \"$HOME/.npm-global\"; export PNPM_HOME=\"$HOME/.local/share/pnpm\"; export PATH=\"$PNPM_HOME:$HOME/.npm-global/bin:$PATH\"; pnpm setup; pnpm -v'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; source ~/.profile; mkdir -p ~/.openclaw/workspace; cd ~/.openclaw/workspace; if [ ! -d openclaw/.git ]; then for i in 1 2 3; do git clone https://github.com/openclaw/openclaw.git && break || sleep 3; done; fi; if [ -d openclaw ]; then cd openclaw; git fetch --tags --prune || true; latest_tag=$(git tag --sort=-v:refname | head -n1 || true); if [[ -n \"$latest_tag\" ]]; then git checkout \"$latest_tag\"; fi; (pnpm install --no-audit --no-fund || npm install) && (pnpm build || npm run build); fi'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; source ~/.profile; if [ -d ~/.openclaw/workspace/openclaw ]; then cd ~/.openclaw/workspace/openclaw; (pnpm install -g . || npm install -g .) || true; openclaw --version || true; fi'" ]
 
 final_message: "Cloud-init complete. SSH to '__VM_USER__' with your configured forwarded SSH port."
 EOF2
 
-  local esc_key
-  esc_key="$(printf '%s' "$SSH_PUBKEY" | sed 's/[\/&]/\\&/g')"
-
-  sed -i \
-    -e "s/__VM_NAME__/${VM_NAME}/g" \
-    -e "s/__VM_USER__/${VM_USER}/g" \
-    -e "s/__SSH_PUBKEY__/${esc_key}/g" \
-    "$VM_USER_DATA"
+  # Use a temporary file to avoid sed escaping issues with SSH keys
+  local temp_file
+  temp_file=$(mktemp)
+  cp "$VM_USER_DATA" "$temp_file"
+  
+  sed -i -e "s/__VM_NAME__/${VM_NAME}/g" -e "s/__VM_USER__/${VM_USER}/g" "$temp_file"
+  
+  # Replace __SSH_PUBKEY__ using awk to avoid sed escaping issues
+  # Strip trailing newline from SSH_PUBKEY before passing to awk
+  local ssh_key_clean
+  ssh_key_clean=$(printf '%s' "$SSH_PUBKEY")
+  awk -v key="$ssh_key_clean" '{gsub(/__SSH_PUBKEY__/, key); print}' "$temp_file" > "$VM_USER_DATA"
+  rm -f "$temp_file"
 
   cat >"$VM_META_DATA" <<EOF2
 instance-id: ${VM_NAME}-$(date +%s)
@@ -411,7 +448,9 @@ is_vm_running() {
 
 cleanup_runtime_files() {
   rm -f "$VM_PID_FILE"
-  [[ -S "$VM_QMP_SOCK" ]] && rm -f "$VM_QMP_SOCK"
+  if [[ -S "$VM_QMP_SOCK" ]]; then
+    rm -f "$VM_QMP_SOCK"
+  fi
 }
 
 env_get() {

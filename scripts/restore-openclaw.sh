@@ -22,7 +22,12 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 plain="$tmpdir/restore.tar"
 
-gpg --output "$plain" --decrypt "$ARCHIVE"
+if [[ -n "${RESTORE_GPG_PASSPHRASE:-}" ]]; then
+  gpg --batch --yes --pinentry-mode loopback --passphrase "$RESTORE_GPG_PASSPHRASE" \
+    --output "$plain" --decrypt "$ARCHIVE"
+else
+  gpg --output "$plain" --decrypt "$ARCHIVE"
+fi
 
 tar --xattrs --acls -xf "$plain"
 
