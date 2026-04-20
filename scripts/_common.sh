@@ -394,8 +394,7 @@ runcmd:
   - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; /home/linuxbrew/.linuxbrew/bin/brew --version || true'" ]
 
   - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; source ~/.profile; mkdir -p \"$HOME/.npm-global\" \"$HOME/.local/share/pnpm\"; npm install -g pnpm --prefix \"$HOME/.npm-global\"; export PNPM_HOME=\"$HOME/.local/share/pnpm\"; export PATH=\"$PNPM_HOME:$HOME/.npm-global/bin:$PATH\"; pnpm setup; pnpm -v'" ]
-  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; source ~/.profile; mkdir -p ~/.openclaw/workspace; cd ~/.openclaw/workspace; if [ ! -d openclaw/.git ]; then for i in 1 2 3; do git clone https://github.com/openclaw/openclaw.git && break || sleep 3; done; fi; if [ -d openclaw ]; then cd openclaw; git fetch --tags --prune || true; latest_tag=$(git tag --sort=-v:refname | head -n1 || true); if [[ -n \"$latest_tag\" ]]; then git checkout \"$latest_tag\"; fi; (pnpm install --no-audit --no-fund || npm install) && (pnpm build || npm run build); fi'" ]
-  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; source ~/.profile; if [ -d ~/.openclaw/workspace/openclaw ]; then cd ~/.openclaw/workspace/openclaw; (pnpm install -g . || npm install -g .) || true; openclaw --version || true; fi'" ]
+  - [ bash, -lc, "sudo -u __VM_USER__ bash -c 'set -euo pipefail; export HOME=/home/__VM_USER__; source ~/.profile; curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash'" ]
 
 final_message: "Cloud-init complete. SSH to '__VM_USER__' with your configured forwarded SSH port."
 EOF2
