@@ -1,12 +1,12 @@
-# OpenClaw VM
+# Hermes Agent VM
 
-This repository contains tools for spinning up OpenClaw in a VM started via QEMU.
+This repository contains tools for spinning up Hermes Agent in a VM started via QEMU. It used to run openclaw but now it's geared towards the [hermes agent](https://hermes-agent.nousresearch.com/). Some names and scripts will remind you of openclaw.
 
 Current design goals:
 - VM based on Ubuntu 24.04 with default user **claw**
 - Node.js **v22+**
 - Node/npm installs **in the user HOME** (no system-level npm global installs)
-- In the user's HOME we check out the OpenClaw GitHub repository (**stable** branch), install deps and build OpenClaw locally
+- In the user's HOME we install the hermes agent.
 - Scripts for **backup/restore** of agent state are provided (optionally including secrets)
 - VM runs headless via QEMU, with per-VM **SSH** and **QEMU VNC** localhost ports
 
