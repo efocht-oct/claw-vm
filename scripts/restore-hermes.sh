@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Restore OpenClaw state from an encrypted GPG archive created by backup-openclaw.sh.
-# WARNING: This overwrites files under ~/.openclaw, ~/.config/gh, ~/.ssh, ~/.vnc, etc.
+# Restore Hermes agent state from an encrypted GPG archive created by backup-hermes.sh.
+# WARNING: This overwrites files under ~/.hermes, ~/.config/gh, ~/.ssh, ~/.vnc, etc.
 
 ARCHIVE="${1:-}"
 if [[ -z "$ARCHIVE" ]]; then
-  echo "Usage: $0 /path/to/openclaw-backup-*.tar.gpg"
+  echo "Usage: $0 /path/to/hermes-backup-*.tar.gpg"
   exit 1
 fi
 
@@ -55,14 +55,14 @@ for f in "$HOME/.profile" "$HOME/.bashrc"; do
   fi
 done
 
-# Recreate an OpenClaw launcher in ~/.local/bin (useful when npm global bin isn't on PATH)
-cat >"$HOME/.local/bin/openclaw" <<'EOF'
+# Recreate a Hermes launcher in ~/.local/bin (useful when npm global bin isn't on PATH)
+cat >"$HOME/.local/bin/hermes" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-exec node "$HOME/.openclaw/workspace/openclaw/dist/index.js" "$@"
+exec node "$HOME/.hermes/workspace/hermes-agent/dist/index.js" "$@"
 EOF
-chmod +x "$HOME/.local/bin/openclaw"
+chmod +x "$HOME/.local/bin/hermes"
 
-echo "Post-restore fixes applied (~/.profile, ~/.bashrc, ~/.local/bin/openclaw)."
+echo "Post-restore fixes applied (~/.profile, ~/.bashrc, ~/.local/bin/hermes)."
 
-echo "If OpenClaw is running, restart it after restore (depending on your install method)."
+echo "If Hermes is running, restart it after restore (depending on your install method)."

@@ -140,7 +140,7 @@ Run backup inside a VM over SSH:
 ./scripts/claw-vmctl backup dev1
 ```
 
-This executes [`backup-openclaw.sh`](scripts/backup-openclaw.sh) inside the target VM user context and downloads the resulting archive to the host under `./backups` by default.
+This executes [`backup-hermes.sh`](scripts/backup-hermes.sh) inside the target VM user context and downloads the resulting archive to the host under `./backups` by default.
 
 Set a custom host output directory:
 
@@ -151,7 +151,41 @@ Set a custom host output directory:
 Restore inside a VM over SSH (overwrites files):
 
 ```bash
-./scripts/claw-vmctl restore dev1 /path/to/openclaw-backup-*.tar.gpg
+./scripts/claw-vmctl restore dev1 /path/to/hermes-backup-*.tar.gpg
 ```
 
 If the archive path exists on the host, it is uploaded to the VM temporarily and removed after restore.
+
+## Resize a VM disk
+
+> **Do not** change `DISK_GB` and rerun `build` on an existing VM — the build flow deletes and recreates the overlay disk.
+
+### Minimal recipe (offline)
+
+```bash
+# 1) stop the VM
+./scripts/claw-vmctl stop dev1
+
+# 2) grow the qcow2 overlay on the host (example: add 20G)
+qemu-img resize "$HOME/ubuntu24-qemu-claw/vms/dev1/disk.qcow2" +20G
+
+# 3) start the VM
+./scripts/claw-vmctl start dev1
+
+# 4) inside the guest — grow the partition and filesystem
+sudo growpart /dev/vda 1
+sudo resize2fs /dev/vda1   # ext4; use "sudo xfs_growfs /" for XFS
+```
+
+Verify:
+
+```bash
+df -h /
+lsblk
+```
+
+### Notes
+
+- The overlay path follows `<BASE_DIR>/vms/<vm-id>/disk.qcow2`; adjust `BASE_DIR` if you use `--base-dir` or `CLAW_VM_BASE_DIR`.
+- Ubuntu 24.04 cloud images use ext4 on `/dev/vda1` by default.
+- Online grow (without stopping) is possible via the QMP socket at `runtime/qmp.sock` using `block_resize`, followed by `growpart`/`resize2fs` inside the guest.

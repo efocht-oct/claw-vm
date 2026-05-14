@@ -16,9 +16,9 @@ Commands:
   start <vm-id>     Start VM in background with per-VM SSH and QEMU VNC port.
   stop <vm-id>      Stop running VM.
   status <vm-id>    Show VM state and key paths.
-  backup <vm-id>    SSH into VM and run backup-openclaw.sh.
+  backup <vm-id>    SSH into VM and run backup-hermes.sh.
   restore <vm-id> <archive>
-                    SSH into VM and run restore-openclaw.sh.
+                    SSH into VM and run restore-hermes.sh.
   list              List VMs found under base directory.
 
 Options (init):
@@ -550,10 +550,10 @@ backup_vm() {
     backup_env_prefix="BACKUP_GPG_PASSPHRASE=$(printf '%q' "$BACKUP_GPG_PASSPHRASE") "
   fi
   ssh -tt -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
-    "$target" "set -euo pipefail; mkdir -p '$remote_tmp_dir'; ${backup_env_prefix}OUT_DIR='$remote_tmp_dir' bash -s" < "$SCRIPT_DIR/backup-openclaw.sh"
+    "$target" "set -euo pipefail; mkdir -p '$remote_tmp_dir'; ${backup_env_prefix}OUT_DIR='$remote_tmp_dir' bash -s" < "$SCRIPT_DIR/backup-hermes.sh"
 
   remote_archive="$(ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
-    "$target" "set -euo pipefail; ls -1 '$remote_tmp_dir'/openclaw-backup-*.tar.gpg | sort | tail -n 1")"
+    "$target" "set -euo pipefail; ls -1 '$remote_tmp_dir'/hermes-backup-*.tar.gpg | sort | tail -n 1")"
   [[ -n "$remote_archive" ]] || die "backup completed but no archive was found in VM temp dir"
 
   echo "Downloading backup archive to host: $host_out_dir"
@@ -595,7 +595,7 @@ restore_vm() {
     restore_env_prefix="RESTORE_GPG_PASSPHRASE=$(printf '%q' "$RESTORE_GPG_PASSPHRASE") "
   fi
   if ! ssh -tt -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
-    "$target" "${restore_env_prefix}bash -s -- $archive_quoted" < "$SCRIPT_DIR/restore-openclaw.sh"; then
+    "$target" "${restore_env_prefix}bash -s -- $archive_quoted" < "$SCRIPT_DIR/restore-hermes.sh"; then
     if [[ "$uploaded" -eq 1 ]]; then
       ssh -p "$SSH_FWD_PORT" -o StrictHostKeyChecking=accept-new \
         "$target" "rm -f -- $archive_quoted" >/dev/null 2>&1 || true
